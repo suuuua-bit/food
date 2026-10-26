@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>음식 받기 게임</title>
+<style>
+:root{
+  --bg:#fff6e6; --ink:#3b2a1a; --muted:#8a6f55; --card:#ffffff; --accent:#e8590c;
+  color-scheme: light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){--bg:#1d1610; --ink:#f7e9d6; --muted:#b79c80; --card:#2a2017; --accent:#ff8a3d; color-scheme:dark;}
+}
+:root[data-theme="dark"]{--bg:#1d1610; --ink:#f7e9d6; --muted:#b79c80; --card:#2a2017; --accent:#ff8a3d; color-scheme:dark;}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:"Jua","Apple SD Gothic Neo","Malgun Gothic",sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:10px;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+.hud{width:min(100%,360px);display:flex;justify-content:space-between;align-items:center;font-size:22px}
+.hud small{color:var(--muted);font-size:14px;display:block;line-height:1}
+#lives{letter-spacing:2px;font-size:24px}
+.stage{position:relative;width:min(100%,360px);max-height:calc(100% - 70px);aspect-ratio:2/3;display:flex}
+canvas{width:100%;height:100%;border-radius:18px;background:#8fd3f4;display:block;box-shadow:0 6px 0 rgba(0,0,0,.18)}
+.overlay{position:absolute;inset:0;border-radius:18px;background:rgba(30,18,8,.62);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;color:#fff;padding:24px}
+.overlay.hide{display:none}
+.overlay h1{margin:0;font-size:34px}
+.overlay p{margin:0;font-size:16px;line-height:1.5;opacity:.92}
+button{font:inherit;font-size:20px;padding:12px 28px;border:0;border-radius:999px;background:var(--accent);color:#fff;cursor:pointer;box-shadow:0 4px 0 rgba(0,0,0,.25)}
+button:active{transform:translateY(3px);box-shadow:0 1px 0 rgba(0,0,0,.25)}
+button:focus-visible{outline:3px solid #fff;outline-offset:3px}
+</style>
+</head>
+<body>
+<div class="hud">
+  <div><small>점수</small><span id="score">0</span></div>
+  <div id="lives" aria-label="남은 목숨">❤️❤️❤️</div>
+  <div style="text-align:right"><small>최고 기록</small><span id="best">0</span></div>
+</div>
+<div class="stage">
+  <canvas id="c" width="360" height="540"></canvas>
+  <div class="overlay" id="menu">
+    <h1>🧺 음식 받기</h1>
+    <p>하늘에서 떨어지는 음식을 바구니로 받으세요.<br>💣 폭탄을 받으면 목숨이 하나 줄어요.<br>목숨 3개가 모두 사라지면 게임 오버!<br>✨ 황금 음식은 +50점, 💖는 목숨을 1개 회복해요.<br>시간이 지날수록 레벨이 오르고 더 빨라집니다.</p>
+    <p>⏱ 제한 시간 <b id="tl">90</b>초 안에 <b id="gl">500</b>점을 모으면 클리어!</p>
+    <p>마우스·터치로 움직이거나 ← → 키를 사용하세요.</p>
+    <button id="start">게임 시작</button>
+  </div>
+  <div class="overlay hide" id="over">
+    <h1 id="overTitle">게임 오버</h1>
+    <p id="final"></p>
+    <button id="retry">다시 하기</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  var cv=document.getElementById('c'), ctx=cv.getContext('2d');
+  var W=cv.width, H=cv.height;
+  var elScore=document.getElementById('score'), elLives=document.getElementById('lives'), elBest=document.getElementById('best');
+  var menu=document.getElementById('menu'), over=document.getElementById('over'), finalEl=document.getElementById('final');
+  var FOODS=['🍎','🍌','🍇','🍕','🍔','🍓','🍩','🍉','🍙','🍪'];
+  var BOMB='💣';
+  var TIME_LIMIT=90, GOAL=500, timeLeft=TIME_LIMIT;
+  document.getElementById('tl').textContent=TIME_LIMIT;
+  document.getElementById('gl').textContent=GOAL;
+  var best=0;
+  try{ best=parseInt(localStorage.getItem('foodcatch-best'),10)||0; }catch(e){}
+  elBest.textContent=best;
+
+  var basket, items, score, lives, spawnT, elapsed, running=false, shake=0, flash=0, pops=[], keys={}, last=0, targetX=null, level=1, banner=0, MAXLIVES=5;
+
+  function reset(){
+    basket={x:W/2,y:H-62,w:70,h:42};
+    items=[]; pops=[]; score=0; lives=3; spawnT=0; elapsed=0; shake=0; flash=0; targetX=null; level=1; banner=0; timeLeft=TIME_LIMIT;
+    updateHud();
+  }
+  function updateHud(){
+    elScore.textContent=score;
+    var s=''; for(var i=0;i<MAXLIVES;i++) s+= i<lives?'❤️':'🖤';
+    elLives.textContent=s;
+  }
+  function spawn(){
+    var bombChance=Math.min(0.22+(level-1)*0.035,0.45);
+    var roll=Math.random(), kind='food';
+    if(roll<bombChance) kind='bomb';
+    else if(roll<bombChance+0.03 && lives<MAXLIVES) kind='heart';
+    else if(roll<bombChance+0.03+0.07) kind='gold';
+    var emoji=kind==='bomb'?BOMB:kind==='heart'?'💖':FOODS[Math.floor(Math.random()*FOODS.length)];
+    items.push({
+      x:24+Math.random()*(W-48), y:-30,
+      vy:(150+Math.random()*80)*speedMul()*(kind==='bomb'?1.15:1),
+      sway:Math.random()*Math.PI*2,
+      e:emoji, kind:kind, bomb:kind==='bomb', r:18
+    });
+  }
+  function speedMul(){ return Math.min(1+0.25*(level-1),4.5); }
+  function start(){
+    reset(); running=true; menu.classList.add('hide'); over.classList.add('hide'); last=performance.now();
+    requestAnimationFrame(loop);
+  }
+  function gameOver(reason){
+    running=false;
+    document.getElementById('overTitle').textContent= reason==='clear'?'🎉 클리어!': reason==='time'?'⏰ 시간 종료':'게임 오버';
+    if(score>best){ best=score; elBest.textContent=best; try{ localStorage.setItem('foodcatch-best',best);}catch(e){} }
+    finalEl.textContent='레벨 '+level+' · 점수 '+score+' / 목표 '+GOAL+'점'+(score>=best&&score>0?' · 새 최고 기록!':'');
+    over.classList.remove('hide');
+  }
+  function update(dt){
+    elapsed+=dt;
+    timeLeft-=dt;
+    if(score>=GOAL){ gameOver('clear'); return; }
+    if(timeLeft<=0){ timeLeft=0; gameOver('time'); return; }
+    var nl=1+Math.floor(elapsed/10);
+    if(nl>level){ level=nl; banner=1.6; }
+    var sp=380;
+    if(keys.ArrowLeft||keys.a) basket.x-=sp*dt;
+    if(keys.ArrowRight||keys.d) basket.x+=sp*dt;
+    if(targetX!==null){ basket.x+=(targetX-basket.x)*Math.min(1,dt*18); }
+    basket.x=Math.max(basket.w/2,Math.min(W-basket.w/2,basket.x));
+
+    spawnT-=dt;
+    if(spawnT<=0){ spawn(); spawnT=Math.max(0.22,0.75-(level-1)*0.07); }
+
+    for(var i=items.length-1;i>=0;i--){
+      var it=items[i];
+      it.y+=it.vy*dt; it.sway+=dt*3; it.x+=Math.sin(it.sway)*Math.min(12+level*4,45)*dt;
+      var inX=Math.abs(it.x-basket.x)<basket.w/2+4;
+      if(inX && it.y+it.r>basket.y && it.y<basket.y+basket.h*0.5){
+        items.splice(i,1);
+        if(it.bomb){
+          lives--; shake=0.35; flash=0.35;
+          pops.push({x:it.x,y:basket.y,t:'-❤️',c:'#ff4d4d',life:0.9});
+          updateHud();
+          if(lives<=0){ gameOver(); return; }
+        } else if(it.kind==='heart'){
+          lives=Math.min(MAXLIVES,lives+1);
+          pops.push({x:it.x,y:basket.y,t:'+❤️',c:'#ff9ad5',life:0.9});
+          updateHud();
+        } else if(it.kind==='gold'){
+          score+=50;
+          pops.push({x:it.x,y:basket.y,t:'+50 ✨',c:'#ffd400',life:0.9});
+          updateHud();
+        } else {
+          score+=10;
+          pops.push({x:it.x,y:basket.y,t:'+10',c:'#fff',life:0.7});
+          updateHud();
+        }
+      } else if(it.y>H+30){ items.splice(i,1); }
+    }
+    for(var j=pops.length-1;j>=0;j--){ pops[j].life-=dt; pops[j].y-=40*dt; if(pops[j].life<=0) pops.splice(j,1); }
+    if(shake>0) shake-=dt; if(flash>0) flash-=dt; if(banner>0) banner-=dt;
+  }
+  function draw(){
+    ctx.save();
+    if(shake>0) ctx.translate((Math.random()-.5)*8,(Math.random()-.5)*8);
+    var g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#7cc7f2'); g.addColorStop(1,'#d9f1ff');
+    ctx.fillStyle=g; ctx.fillRect(-10,-10,W+20,H+20);
+    // clouds
+    ctx.fillStyle='rgba(255,255,255,.75)';
+    [[70,80,30],[110,90,24],[270,150,28],[305,158,20]].forEach(function(c){ctx.beginPath();ctx.arc(c[0],c[1],c[2],0,7);ctx.fill();});
+    // ground
+    ctx.fillStyle='#6cbf4b'; ctx.fillRect(0,H-22,W,22);
+    ctx.fillStyle='#57a53b'; ctx.fillRect(0,H-22,W,5);
+    // items
+    ctx.font='34px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    items.forEach(function(it){
+      if(it.kind==='gold'){
+        ctx.fillStyle='rgba(255,212,0,.45)'; ctx.beginPath(); ctx.arc(it.x,it.y,24,0,7); ctx.fill();
+        ctx.strokeStyle='#ffd400'; ctx.lineWidth=3; ctx.stroke();
+        ctx.shadowColor='#ffb300'; ctx.shadowBlur=16;
+      }
+      ctx.fillText(it.e,it.x,it.y);
+      ctx.shadowBlur=0;
+    });
+    // basket
+    var b=basket, x=b.x-b.w/2, y=b.y;
+    ctx.fillStyle='#b9762f';
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+b.w,y); ctx.lineTo(x+b.w-10,y+b.h); ctx.lineTo(x+10,y+b.h); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='#8a5518'; ctx.lineWidth=3;
+    for(var k=1;k<4;k++){ ctx.beginPath(); ctx.moveTo(x+10+k*(b.w-20)/4,y+4); ctx.lineTo(x+10+k*(b.w-20)/4,y+b.h-3); ctx.stroke(); }
+    for(var m=1;m<3;m++){ ctx.beginPath(); ctx.moveTo(x+4,y+m*b.h/3); ctx.lineTo(x+b.w-4,y+m*b.h/3); ctx.stroke(); }
+    ctx.fillStyle='#8a5518'; ctx.fillRect(x-4,y-5,b.w+8,9);
+    // popups
+    ctx.font='bold 22px sans-serif';
+    pops.forEach(function(p){ ctx.globalAlpha=Math.max(0,Math.min(1,p.life*1.5)); ctx.fillStyle=p.c; ctx.strokeStyle='rgba(0,0,0,.45)'; ctx.lineWidth=3; ctx.strokeText(p.t,p.x,p.y-20); ctx.fillText(p.t,p.x,p.y-20); });
+    ctx.globalAlpha=1;
+    ctx.font='bold 18px sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#fff'; ctx.strokeStyle='rgba(0,0,0,.45)'; ctx.lineWidth=3;
+    ctx.strokeText('Lv.'+level,12,22); ctx.fillText('Lv.'+level,12,22);
+    var tt='⏱ '+Math.ceil(timeLeft)+'초'; ctx.textAlign='right'; ctx.fillStyle=timeLeft<=10?'#ff5a5a':'#fff';
+    ctx.strokeText(tt,W-12,22); ctx.fillText(tt,W-12,22);
+    ctx.fillStyle='rgba(0,0,0,.3)'; ctx.fillRect(12,32,W-24,10);
+    ctx.fillStyle='#ffd400'; ctx.fillRect(12,32,(W-24)*Math.min(1,score/GOAL),10);
+    ctx.font='bold 13px sans-serif'; ctx.textAlign='left'; ctx.fillStyle='#fff';
+    ctx.strokeText('목표 '+score+' / '+GOAL,12,58); ctx.fillText('목표 '+score+' / '+GOAL,12,58);
+    if(banner>0 && running){
+      ctx.textAlign='center'; ctx.font='bold 36px sans-serif'; ctx.globalAlpha=Math.min(1,banner);
+      ctx.strokeText('레벨 '+level+' · 더 빨라져요!',W/2,H/2-60); ctx.fillText('레벨 '+level+' · 더 빨라져요!',W/2,H/2-60);
+      ctx.globalAlpha=1;
+    }
+    if(flash>0){ ctx.fillStyle='rgba(255,40,40,'+(flash*1.2)+')'; ctx.fillRect(-10,-10,W+20,H+20); }
+    ctx.restore();
+  }
+  function loop(t){
+    if(!running){ draw(); return; }
+    var dt=Math.min(0.033,(t-last)/1000); last=t;
+    update(dt); draw();
+    if(running) requestAnimationFrame(loop);
+  }
+
+  function pointerX(e){
+    var r=cv.getBoundingClientRect();
+    return (e.clientX-r.left)/r.width*W;
+  }
+  window.addEventListener('pointermove',function(e){ if(running) targetX=pointerX(e); });
+  window.addEventListener('pointerdown',function(e){ if(running) targetX=pointerX(e); });
+  window.addEventListener('keydown',function(e){
+    keys[e.key]=true;
+    if(e.key.indexOf('Arrow')===0) e.preventDefault();
+    if(e.key==='Enter'&&!running) start();
+  });
+  window.addEventListener('keyup',function(e){ keys[e.key]=false; });
+  document.getElementById('start').addEventListener('click',start);
+  document.getElementById('retry').addEventListener('click',start);
+
+  reset(); draw();
+})();
+</script>
+</body>
+</html>
